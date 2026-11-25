@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Run-time output
+solve_transcript.log
+
+# Built practice programs and their generated dummy flags (rebuild with: make -C testbed)
+testbed/*
+!testbed/src/
+!testbed/Makefile
+!testbed/*.py
+!testbed/*.sh
+testbed/flags/
