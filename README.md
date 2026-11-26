@@ -10,6 +10,7 @@ technique, and prints the flag — or tells you plainly why it could not.
 - **Pure Python standard library.** No pwntools, no pip installs, works offline.
 - **One command, no options to remember:** `python3 go.py`
 - **Honest output.** It does not claim a flag or a shell unless it can prove it.
+- **A fallback page for when it fails:** [`STUCK.md`](STUCK.md).
 
 > **Use it only on targets you are allowed to attack**: your own machines, CTF challenges,
 > and course labs you are enrolled in. Everything in `testbed/` is a local practice program
@@ -214,6 +215,11 @@ Work down this list. Each step takes under a minute.
    change on every connection.
 6. **Move on.**
 
+**Still stuck? Open [`STUCK.md`](STUCK.md).** It is the offline fallback: what to do when the
+tool itself breaks, three quick tests to tell which bug you are facing, and how to solve each
+one **by hand** with a single command or with plain `python3` and `nc`. Every command in it
+was run against the practice programs.
+
 `RUNBOOK.md` lists the manual command for each situation.
 
 ## 8. What it handles, and what it does not
@@ -297,6 +303,7 @@ python3 notes.py paper.txt                           # what would it read from t
 ```
 bof-scripts/
 ├── README.md        this file
+├── STUCK.md         when the script does not solve it: fixes, and doing it by hand
 ├── HOWTO.md         the three bugs explained, and how to read the output
 ├── RUNBOOK.md       reference: the command for each situation
 ├── go.py            start here

@@ -125,6 +125,9 @@ The program does `printf(your_input)`. Then `%x` / `%p` print values from its st
 
 ## 4. When it does not solve
 
+**If you are properly stuck, open `STUCK.md` in this folder.** It covers the tool itself
+breaking, how to tell which bug it is, and how to solve each one by hand.
+
 Work down this list; each step takes under a minute.
 
 1. **Read `READ THIS FIRST`** at the bottom of the output.

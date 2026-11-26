@@ -242,6 +242,20 @@ def analyze_binary(path):
                         pass
     win_syms = sorted({f for f in funcs if re.search(r"(win|flag|secret|shell|admin|success)", f, re.I)})
     has_canary = "__stack_chk_fail" in readelf_s or "__stack_chk_guard" in readelf_s
+    # The name rule found nothing in the program's own code (flag function called
+    # open_vault / staff_only), or the binary is statically linked and the matches are
+    # libc internals: ask elftool, which also looks at what a function DOES (25 Nov).
+    if not win_syms or len(funcs) > 300:
+        try:
+            import elftool
+            _e = elftool.ELF(path)
+            if _e.win_symbols or len(funcs) > 300:
+                win_syms = sorted(_e.win_symbols)
+                win_addresses = sorted(_e.win_symbols.values())
+                if len(funcs) > 300:
+                    has_canary = _e.canary
+        except Exception:                           # noqa: BLE001
+            pass
 
     nx = "unknown"
     for line in readelf_l.splitlines():

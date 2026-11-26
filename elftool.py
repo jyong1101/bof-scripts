@@ -165,6 +165,84 @@ class ELF:
         self.canary = any(n.startswith("__stack_chk_fail") for n in
                           list(self.symbols) + [d["name"] for d in self.dynsym])
         self.win_symbols = {n: a for n, a in self.functions.items() if WIN_RE.search(n)}
+        self._win_fallback()
+
+    # A flag function is recognised by NAME first (win, flag, secret ...). Two cases that
+    # rule cannot see (found on a classmate's range, 25 Nov): the function is called
+    # something else (open_vault, staff_only), and a statically linked binary, where the
+    # name rule matches ~40 libc internals (_Unwind_*, _dl_debug_*) instead. Both are
+    # answered the way a person would: the function nothing calls that opens a file or
+    # starts a shell. The name rule stays in front; this only runs when it found nothing
+    # in the program's own code.
+    # static glibc shows the same routines under internal names (_IO_new_fopen, __libc_system)
+    _OPENERS = ("fopen", "fopen64", "open", "open64", "openat", "system", "execve", "execl", "execlp", "execv", "execvp", "popen",
+                "_IO_new_fopen", "_IO_fopen", "__fopen_internal", "__libc_open", "__libc_open64", "__open", "__open64",
+                "__libc_system", "__execve", "_IO_new_popen")
+    _NOT_OURS = ("main", "frame_dummy", "register_tm_clones", "deregister_tm_clones")
+
+    def _own_code(self, name, addr):
+        """True for a function that belongs to the program, not to libc/crt glue."""
+        if name.startswith("_") or "." in name or name in self._NOT_OURS:
+            return False
+        main = self.functions.get("main")
+        if main is not None and len(self.functions) > 300:      # static link: libc is in here too
+            return abs(addr - main) < 0x2000                    # the program's own object sits around main
+        return True
+
+    def _callgraph(self):
+        """function -> names it calls (one objdump pass, cached)."""
+        if getattr(self, "_calls", None) is not None:
+            return self._calls
+        self._calls = {}
+        if not self.functions or not shutil.which("objdump"):
+            return self._calls
+        try:
+            txt = subprocess.run(["objdump", "-d", "--no-show-raw-insn", self.path],
+                                 capture_output=True, text=True, timeout=30).stdout
+        except Exception:
+            return self._calls
+        cur = None
+        for line in txt.splitlines():
+            m = re.match(r"^[0-9a-f]+ <([^>]+)>:", line)
+            if m:
+                cur = m.group(1)
+                self._calls.setdefault(cur, set())
+                continue
+            if cur:
+                m = re.search(r"\b(?:call|jmp)\w*\s+[0-9a-f]+ <([^>+]+)>", line)
+                if m:
+                    self._calls[cur].add(m.group(1).split("@")[0])
+        return self._calls
+
+    @property
+    def static(self):
+        return len(self.functions) > 300
+
+    def _win_fallback(self):
+        if self.static:
+            # libc is linked in, so "__stack_chk_fail exists" says nothing about the PROGRAM:
+            # it has a canary only if its own functions call the check.
+            calls = self._callgraph()
+            self.canary = any("__stack_chk_fail" in " ".join(cs) for n, cs in calls.items()
+                              if n == "main" or self._own_code(n, self.functions.get(n, 0)))
+
+        named = {n: a for n, a in self.win_symbols.items() if self._own_code(n, a)}
+        if named:
+            if len(self.functions) > 300:
+                self.win_symbols = named                        # static link: drop the libc look-alikes
+            return
+        calls = self._callgraph()
+        if not calls:
+            return
+        called = set()
+        for caller, cs in calls.items():
+            called |= (cs - {caller})
+        found = {}
+        for n, a in self.functions.items():
+            if self._own_code(n, a) and n not in called and (calls.get(n, set()) & set(self._OPENERS)):
+                found[n] = a
+        if found or len(self.functions) > 300:                  # static link: never keep the libc look-alikes
+            self.win_symbols = found
 
     def data_symbols(self):
         """Named globals that live in a WRITABLE section, e.g. `target` in .bss.
@@ -302,6 +380,8 @@ class ELF:
         for name, f in funcs.items():
             if not f["bufs"] and not f["sinks"]:
                 continue
+            if self.static and name != "main" and not self._own_code(name, self.functions.get(name, 0)):
+                continue                       # libc's own frames are not where the bug is
             cands = sorted({n + slot for n in f["bufs"]})
             sinks = sorted(set(f["sinks"]))
             # stdin-reaching sinks are the real overflow sources; fgets usually reads a
